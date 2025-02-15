@@ -18,14 +18,17 @@ import (
 )
 
 const (
-	BLOODHOUND  = "docker.io/specterops/bloodhound:latest"
-	NEO4J       = "docker.io/library/neo4j:4.4"
-	POSTGRESQL  = "docker.io/library/postgres:16"
-	NETWORK     = "BloodHound-CE-network"
-	PSQLFOLDER  = "bloodhound-data/postgresql"
-	NEO4JFOLDER = "bloodhound-data/neo4j"
-	ADMIN_NAME  = "admin"
-	ADMIN_PASS  = "admin"
+	BLOODHOUND       = "docker.io/specterops/bloodhound:latest"
+	NEO4J            = "docker.io/library/neo4j:4.4"
+	POSTGRESQL       = "docker.io/library/postgres:16"
+	NETWORK          = "BloodHound-CE-network"
+	PSQLFOLDER       = "bloodhound-data/postgresql"
+	NEO4JFOLDER      = "bloodhound-data/neo4j"
+	ADMIN_NAME       = "admin"
+	ADMIN_PASS       = "admin"
+	BH_SUCC_START    = "Server started successfully"
+	PSQL_SUCC_START  = "database system is ready to accept connections"
+	NEO4J_SUCC_START = "Remote interface available"
 )
 
 func createFolders() error {
@@ -42,6 +45,7 @@ func createFolders() error {
 
 func main() {
 	pull := false
+	showLogs := true
 	createFolders()
 	// make source full path
 	// get the current working directory
@@ -79,143 +83,30 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	psqlID, err := SpawnPostgresql(&conn, wd, pull)
+	psqlID, err := SpawnPostgresql(&conn, wd, pull, showLogs)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
 	defer stopContainers(&conn, psqlID)
-	// Wait until "database system is ready to accept connections"
-	// Wait for postgresql and neo4j to be ready before running bloodhound
-	psqlOut := make(chan string)
-	defer close(psqlOut)
-	psqlErr := make(chan string)
-	defer close(psqlErr)
-	psqlReady := make(chan struct{})
-	defer close(psqlReady)
-	lo := &containers.LogOptions{
-		Follow: boolPtr(true),
-		Stdout: boolPtr(true),
-		Stderr: boolPtr(true),
-	}
-	go func() {
-		for msg := range psqlOut {
-			fmt.Printf("PostgreSQL: %s\n", msg)
-			if strings.Contains(msg, "database system is ready to accept connections") {
-				fmt.Println("PostgreSQL is ready.")
-				psqlReady <- struct{}{}
-				break
-			}
-		}
-	}()
-	go func() {
-		for msg := range psqlErr {
-			fmt.Printf("PostgreSQL[ERROR]: %s\n", msg)
-			if strings.Contains(msg, "database system is ready to accept connections") {
-				fmt.Println("PostgreSQL is ready.")
-				psqlReady <- struct{}{}
-				break
-			}
-		}
-	}()
-	go func() { // Why the fuck does this need to be in a goroutine
-		err = containers.Logs(conn, psqlID, lo, psqlOut, psqlErr)
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-	}()
 
-	neo4jID, err := SpawnNeo4j(&conn, wd, pull)
+	neo4jID, err := SpawnNeo4j(&conn, wd, pull, showLogs)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
 	defer stopContainers(&conn, neo4jID)
-	// Wait for postgresql and neo4j to be ready before running bloodhound
-	dbOut := make(chan string)
-	defer close(dbOut)
-	dbErr := make(chan string)
-	defer close(dbErr)
-	neo4jReady := make(chan struct{})
-	defer close(neo4jReady)
 
-	go func() {
-		for msg := range dbOut {
-			fmt.Printf("Neo4j: %s\n", msg)
-			if strings.Contains(msg, "Remote interface available at http://localhost:7474/") {
-				fmt.Println("Neo4j is ready.")
-				neo4jReady <- struct{}{}
-				break
-			}
-		}
-	}()
-	fmt.Printf("Capturing Logs...\n")
-	// go func() {
-	// 	for err := range dbErr {
-	// 		fmt.Printf("Neo4j[ERROR]: %s\n", err)
-	// 	}
-	// }()
-	go func() { // Why the fuck does this need to be in a goroutine
-		err = containers.Logs(conn, neo4jID, lo, dbOut, dbErr)
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-	}()
-	fmt.Printf("Waiting for PostgreSQL to be ready...\n")
-	<-psqlReady
-	fmt.Printf("Waiting for Neo4j to be ready...\n")
-	<-neo4jReady
-	// Wait 5 seconds before spawning bloodhound
-	fmt.Printf("Sleeping 15 seconds because PostgreSQL is slow...")
+	fmt.Printf("Sleeping 15 seconds because PostgreSQL is slow...\n")
 	time.Sleep(15 * time.Second)
 
-	bloodhoundID, err := SpawnBloodhoundCE(&conn, wd, pull)
+	bloodhoundID, err := SpawnBloodhoundCE(&conn, wd, pull, showLogs)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
 	defer stopContainers(&conn, bloodhoundID)
 
-	// Wait until bloodhound is ready
-	bhOut := make(chan string)
-	defer close(bhOut)
-	bhErr := make(chan string)
-	defer close(bhErr)
-	bhReady := make(chan bool, 1)
-	defer close(bhReady)
-	go func() {
-		for msg := range bhOut {
-			fmt.Printf("Bloodhound: %s\n", msg)
-			if strings.Contains(msg, "Server started successfully") {
-				fmt.Println("Bloodhound is ready.")
-				bhReady <- true
-				break
-			}
-			if strings.Contains(msg, "ERROR") {
-				fmt.Println("Bloodhound failed to start.")
-				bhReady <- false
-			}
-		}
-	}()
-	go func() {
-		for msg := range bhErr {
-			fmt.Printf("Bloodhound[ERROR]: %s\n", msg)
-		}
-	}()
-	go func() { // why the fuck does this need to be in a thread
-		err = containers.Logs(conn, bloodhoundID, lo, bhOut, bhErr)
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-	}()
-	if !<-bhReady {
-		fmt.Printf("Bloodhound failed\n")
-		stopContainers(&conn, neo4jID, psqlID, bloodhoundID)
-		os.Exit(1)
-	}
 	// <-bhReady
 
 	// update postgresql password expiration
@@ -223,14 +114,14 @@ func main() {
 	fmt.Print("Press any key to exit.")
 	input := bufio.NewScanner(os.Stdin)
 	input.Scan()
+	fmt.Printf("Cleaning up...\n")
 }
 
-func SpawnPostgresql(conn *context.Context, wd string, pull bool) (string, error) {
+func SpawnPostgresql(conn *context.Context, wd string, pull bool, showLogs bool) (string, error) {
 	// postgresql image
 	if pull {
 		_, err := images.Pull(*conn, POSTGRESQL, nil)
 		if err != nil {
-			// fmt.Println(err)
 			return "", err
 		}
 	}
@@ -262,24 +153,27 @@ func SpawnPostgresql(conn *context.Context, wd string, pull bool) (string, error
 
 	createResponse, err := containers.CreateWithSpec(*conn, s, nil)
 	if err != nil {
-		// fmt.Println(err)
 		return "", err
 	}
-	fmt.Println("Container created.")
+	fmt.Println("PostgreSQL Container created.")
 	if err := containers.Start(*conn, createResponse.ID, nil); err != nil {
-		// fmt.Println(err)
 		return "", err
 	}
-	fmt.Println("Container started.")
+	fmt.Println("PostgreSQL Container started.")
+	// Wait until PostgreSQL is ready
+	err = waitUntilReady(conn, createResponse.ID, PSQL_SUCC_START, "PostgreSQL", showLogs)
+	if err != nil {
+		return "", err
+	}
+	fmt.Printf("PostgreSQL is ready.\n")
 	return createResponse.ID, nil
 }
 
-func SpawnNeo4j(conn *context.Context, wd string, pull bool) (string, error) {
+func SpawnNeo4j(conn *context.Context, wd string, pull bool, showLogs bool) (string, error) {
 	// neo4j image
 	if pull {
 		_, err := images.Pull(*conn, NEO4J, nil)
 		if err != nil {
-			// fmt.Println(err)
 			return "", err
 		}
 	}
@@ -308,24 +202,27 @@ func SpawnNeo4j(conn *context.Context, wd string, pull bool) (string, error) {
 
 	createResponse, err := containers.CreateWithSpec(*conn, s, nil)
 	if err != nil {
-		// fmt.Println(err)
 		return "", err
 	}
-	fmt.Println("Container created.")
+	fmt.Println("Neo4j Container created.")
 	if err := containers.Start(*conn, createResponse.ID, nil); err != nil {
-		// fmt.Println(err)
 		return "", err
 	}
-	fmt.Println("Container started.")
+	fmt.Println("Neo4j Container started.")
+	// Wait until neo4j is ready
+	err = waitUntilReady(conn, createResponse.ID, NEO4J_SUCC_START, "Neo4j", showLogs)
+	if err != nil {
+		return "", err
+	}
+	fmt.Printf("Neo4j is ready.\n")
 	return createResponse.ID, nil
 }
 
-func SpawnBloodhoundCE(conn *context.Context, wd string, pull bool) (string, error) {
+func SpawnBloodhoundCE(conn *context.Context, wd string, pull bool, showLogs bool) (string, error) {
 	// bloodhound image
 	if pull {
 		_, err := images.Pull(*conn, BLOODHOUND, nil)
 		if err != nil {
-			// fmt.Println(err)
 			return "", err
 		}
 	}
@@ -361,16 +258,61 @@ func SpawnBloodhoundCE(conn *context.Context, wd string, pull bool) (string, err
 
 	createResponse, err := containers.CreateWithSpec(*conn, s, nil)
 	if err != nil {
-		// fmt.Println(err)
 		return "", err
 	}
-	fmt.Println("Container created.")
+	fmt.Println("Bloodhound Container created.")
 	if err := containers.Start(*conn, createResponse.ID, nil); err != nil {
-		// fmt.Println(err)
 		return "", err
 	}
-	fmt.Println("Container started.")
+	fmt.Println("Bloodhound Container started.")
+	// Wait until bloodhound is ready
+	err = waitUntilReady(conn, createResponse.ID, BH_SUCC_START, "Bloodhound", showLogs)
+	if err != nil {
+		return "", err
+	}
+	fmt.Printf("Bloodhound is ready.\n")
 	return createResponse.ID, nil
+}
+
+func waitUntilReady(conn *context.Context, id string, success string, product string, showlogs bool) error {
+	logs := make(chan string)
+	ready := make(chan bool, 1)
+	// loop reading logs until we are successful, if an error we restart the container
+	fmt.Printf("Watching logs until %s is ready...\n", product)
+	go func() {
+		for msg := range logs {
+			if showlogs {
+				fmt.Printf("%s: %s\n", product, msg)
+			}
+			if strings.Contains(msg, success) {
+				ready <- true
+			}
+			if strings.Contains(msg, "ERROR") {
+				fmt.Printf("%s failed to start.: %s\n", product, msg)
+				ready <- false
+			}
+		}
+	}()
+	for {
+		lo := &containers.LogOptions{
+			Stdout: boolPtr(true),
+			Stderr: boolPtr(true),
+		}
+		err := containers.Logs(*conn, id, lo, logs, logs)
+		if err != nil {
+			fmt.Println(err)
+			return err
+		}
+
+		fmt.Printf("Done checking logs for now...\n")
+		select {
+		case <-ready:
+			return nil
+		default:
+		}
+		time.Sleep(5 * time.Second)
+		fmt.Printf("Checking logs again...\n")
+	}
 }
 
 func stopContainers(conn *context.Context, running ...string) error {
