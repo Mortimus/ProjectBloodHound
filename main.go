@@ -25,18 +25,15 @@ import (
 )
 
 const (
-	BLOODHOUND  = "docker.io/specterops/bloodhound:latest"
-	NEO4J       = "docker.io/library/neo4j:4.4"
-	POSTGRESQL  = "docker.io/library/postgres:16"
-	NETWORK     = "BloodHound-CE-network"
-	PSQLFOLDER  = "bloodhound-data/postgresql"
-	NEO4JFOLDER = "bloodhound-data/neo4j"
-	// ADMIN_NAME       = "admin"
-	// ADMIN_PASS       = "admin"
+	BLOODHOUND       = "docker.io/specterops/bloodhound:latest"
+	NEO4J            = "docker.io/library/neo4j:4.4"
+	POSTGRESQL       = "docker.io/library/postgres:16"
+	NETWORK          = "BloodHound-CE-network"
+	PSQLFOLDER       = "bloodhound-data/postgresql"
+	NEO4JFOLDER      = "bloodhound-data/neo4j"
 	BH_SUCC_START    = "Server started successfully"
 	PSQL_SUCC_START  = "database system is ready to accept connections"
 	NEO4J_SUCC_START = "Remote interface available"
-	// EXPIRATION       = "2099-12-31 23:59:59"
 )
 
 var ADMIN_NAME string = "admin"
@@ -124,7 +121,6 @@ func main() {
 		}
 	}
 
-	// showLogs := true
 	err = createFolders(*path)
 	if err != nil {
 		fmt.Println(err)
@@ -174,9 +170,6 @@ func main() {
 		return
 	}
 	defer stopContainers(&conn, neo4jID)
-
-	// fmt.Printf("Sleeping 15 seconds because PostgreSQL is slow...\n")
-	// time.Sleep(15 * time.Second)
 
 	bloodhoundID, err := SpawnBloodhoundCE(&conn, wd, *pull, *showLogs)
 	if err != nil {
@@ -247,12 +240,6 @@ func SpawnPostgresql(conn *context.Context, wd string, pull bool, showLogs bool)
 		},
 	}
 
-	// s.OverlayVolumes = []*specgen.OverlayVolume{
-	// 	{
-	// 		Source:      path.Join(wd, PSQLFOLDER),  // local folder
-	// 		Destination: "/var/lib/postgresql/data", // container folder
-	// 	},
-	// }
 	remove := true
 	s.Remove = &remove
 
@@ -304,12 +291,6 @@ func SpawnNeo4j(conn *context.Context, wd string, pull bool, showLogs bool) (str
 		},
 	}
 
-	// s.OverlayVolumes = []*specgen.OverlayVolume{
-	// 	{
-	// 		Source:      path.Join(wd, NEO4JFOLDER), // local folder
-	// 		Destination: "/data",                    // container folder
-	// 	},
-	// }
 	remove := true
 	s.Remove = &remove
 
@@ -368,8 +349,6 @@ func SpawnBloodhoundCE(conn *context.Context, wd string, pull bool, showLogs boo
 			ContainerPort: 8080,
 		},
 	}
-	// publishExposedPorts := true
-	// s.PublishExposedPorts = &publishExposedPorts
 
 	s.Networks = map[string]types.PerNetworkOptions{
 		NETWORK: {
@@ -461,30 +440,16 @@ func boolPtr(b bool) *bool {
 }
 
 func updatePasswordExpiration(conn *context.Context, containerID string, expiration string) error {
-	// podman exec "$POSTGRES_CONTAINER" psql -q -U "bloodhound" -d "bloodhound" -c \
-	// "UPDATE auth_secrets SET expires_at='$EXPIRY' WHERE id='1';"
+
 	config := &handlers.ExecCreateConfig{}
-	// command := `psql -q -U bloodhound -d bloodhound -c "UPDATE auth_secrets SET expires_at='$EXPIRY' WHERE id='1';"`
-	// command := `ls`
+
 	final := fmt.Sprintf("UPDATE auth_secrets SET expires_at='%s' WHERE id='1';", expiration)
 	config.Cmd = []string{"psql", "-q", "-U", "bloodhound", "-d", "bloodhound", "-c", final}
-	// config.Cmd = append(config.Cmd, command)
-	// config.Detach = true
-	// config.User = "root"
 
 	execID, err := containers.ExecCreate(*conn, containerID, config)
 	if err != nil {
 		return err
 	}
-
-	// inspect to debug
-	// inspection, err := containers.ExecInspect(*conn, execID, nil)
-	// if err != nil {
-	// 	return err
-	// }
-	// fmt.Printf("ExecInspect: %#+v\n", inspection)
-
-	// startOptions := &containers.ExecStartOptions{}
 
 	err = containers.ExecStart(*conn, execID, nil)
 	if err != nil {
@@ -495,12 +460,7 @@ func updatePasswordExpiration(conn *context.Context, containerID string, expirat
 }
 
 func insertCustomQuery(conn *context.Context, containerID string, name string, query string, description string) error {
-	// INSERT INTO saved_queries (user_id, name, query, description) SELECT (SELECT id FROM users WHERE principal_name = 'admin'), 'My New Query Name', 'SELECT * FROM some_table;', 'A description of my query' WHERE EXISTS (SELECT 1 FROM users WHERE principal_name = 'admin');
 	config := &handlers.ExecCreateConfig{}
-
-	// name := "My New Query Name"
-	// query := "MATCH p=(n:Group)<-[:MemberOf*1..]-(m:Base) WHERE n.objectid ENDS WITH '-512' RETURN p LIMIT 1000"
-	// description := "A description of my query"
 
 	final := fmt.Sprintf("INSERT INTO saved_queries (user_id, name, query, description) SELECT (SELECT id FROM users WHERE principal_name = 'admin'), '%s', '%s', '%s' WHERE EXISTS (SELECT 1 FROM users WHERE principal_name = '%s');", name, query, description, ADMIN_NAME)
 
