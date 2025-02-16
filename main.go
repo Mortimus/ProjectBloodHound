@@ -106,7 +106,7 @@ func main() {
 	expiration := flag.String("expiration", time.Now().AddDate(10, 0, 0).Format("2006-01-02 15:04:05"), "Set password expiration date")
 	customPath := flag.String("custom", "customqueries.json", "Path to custom queries json file in legacy bloodhound format")
 	path := flag.String("path", wd, "Path to store data folders")
-	forceInjection := flag.Bool("force", false, "Force injection of custom queries - will add duplicates if they alerady exist")
+	forceInjection := flag.Bool("force", false, "Force injection of custom queries - will add duplicates if they already exist")
 	// name := flag.String("name", currentFolderName, "Project Name for internal database usage")
 	flag.Parse()
 	// check to see if the path exists
@@ -117,17 +117,19 @@ func main() {
 		err = nil
 	}
 	// check if the custom queries file exists
-	if _, err := os.Stat(*customPath); os.IsNotExist(err) {
-		fmt.Printf("Custom queries file not found at %s\n", *customPath)
-		return
+	if *forceInjection {
+		if _, err := os.Stat(*customPath); os.IsNotExist(err) {
+			fmt.Printf("Custom queries file not found at %s\n", *customPath)
+			return
+		}
 	}
+
 	// showLogs := true
 	err = createFolders(*path)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	fmt.Printf("Folders created at %s\n", *path)
 
 	conn, err := bindings.NewConnection(context.Background(), "unix:///run/podman/podman.sock")
 	if err != nil {
