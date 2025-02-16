@@ -98,7 +98,7 @@ func main() {
 	}
 	// currentFolderName := filepath.Base(wd)
 	// pull cli flags
-	pull := flag.Bool("pull", false, "Pull images before starting containers")
+	pull := flag.Bool("pull", true, "Pull images before starting containers (docker has a rate limit per hour)")
 	showLogs := flag.Bool("logs", false, "Show container logs")
 	expiration := flag.String("expiration", time.Now().AddDate(10, 0, 0).Format("2006-01-02 15:04:05"), "Set password expiration date")
 	customPath := flag.String("custom", "customqueries.json", "Path to custom queries json file in legacy bloodhound format")
