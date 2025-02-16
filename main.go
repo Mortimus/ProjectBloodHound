@@ -3,13 +3,17 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
+	"flag"
 	"fmt"
+	"log"
 	"os"
 	"path"
 	"strings"
 	"time"
 
 	"github.com/containers/common/libnetwork/types"
+	"github.com/containers/podman/v5/pkg/api/handlers"
 	"github.com/containers/podman/v5/pkg/bindings"
 	"github.com/containers/podman/v5/pkg/bindings/containers"
 	"github.com/containers/podman/v5/pkg/bindings/images"
@@ -18,18 +22,22 @@ import (
 )
 
 const (
-	BLOODHOUND       = "docker.io/specterops/bloodhound:latest"
-	NEO4J            = "docker.io/library/neo4j:4.4"
-	POSTGRESQL       = "docker.io/library/postgres:16"
-	NETWORK          = "BloodHound-CE-network"
-	PSQLFOLDER       = "bloodhound-data/postgresql"
-	NEO4JFOLDER      = "bloodhound-data/neo4j"
-	ADMIN_NAME       = "admin"
-	ADMIN_PASS       = "admin"
+	BLOODHOUND  = "docker.io/specterops/bloodhound:latest"
+	NEO4J       = "docker.io/library/neo4j:4.4"
+	POSTGRESQL  = "docker.io/library/postgres:16"
+	NETWORK     = "BloodHound-CE-network"
+	PSQLFOLDER  = "bloodhound-data/postgresql"
+	NEO4JFOLDER = "bloodhound-data/neo4j"
+	// ADMIN_NAME       = "admin"
+	// ADMIN_PASS       = "admin"
 	BH_SUCC_START    = "Server started successfully"
 	PSQL_SUCC_START  = "database system is ready to accept connections"
 	NEO4J_SUCC_START = "Remote interface available"
+	// EXPIRATION       = "2099-12-31 23:59:59"
 )
+
+var ADMIN_NAME string = "admin"
+var ADMIN_PASS string = "admin"
 
 func createFolders() error {
 	err := os.MkdirAll(PSQLFOLDER, 0755)
@@ -43,27 +51,67 @@ func createFolders() error {
 	return nil
 }
 
+func createConfig() error {
+	// print path to home folder
+	dirname, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatal(err)
+	}
+	// fmt.Println(dirname)
+	// check if folder exists and otherwise create it
+	configPath := path.Join(dirname, ".pbh")
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		fmt.Printf("Creating config folder %s\n", configPath)
+		os.Mkdir(configPath, 0755)
+	}
+	// Create SQLite database
+	// check if file exists and otherwise create it
+	dbPath := path.Join(configPath, "settings.db")
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		fmt.Printf("Creating database %s\n", dbPath)
+		_, err := os.Create(dbPath)
+		if err != nil {
+			return err
+		}
+	}
+
+	// create a config file
+	return nil
+}
+
+func loadConfig() error {
+
+	// load a config file
+	return nil
+}
+
 func main() {
-	pull := false
-	showLogs := true
+	// pull cli flags
+	pull := flag.Bool("pull", false, "Pull images before starting containers")
+	showLogs := flag.Bool("logs", false, "Show container logs")
+	expiration := flag.String("expiration", time.Now().AddDate(10, 0, 0).Format("2006-01-02 15:04:05"), "Set password expiration date")
+	flag.Parse()
+	// showLogs := true
 	createFolders()
+
 	// make source full path
 	// get the current working directory
 	wd, err := os.Getwd()
 	if err != nil {
 		fmt.Println(err)
-		os.Exit(1)
+		return
 	}
 	conn, err := bindings.NewConnection(context.Background(), "unix:///run/podman/podman.sock")
 	if err != nil {
 		fmt.Println(err)
-		os.Exit(1)
+		fmt.Printf("Is podman running as a service, and do you have permission (Administrator) to use it?\n")
+		return
 	}
 
 	networks, err := network.List(conn, nil)
 	if err != nil {
 		fmt.Println(err)
-		os.Exit(1)
+		return
 	}
 	// Create a network if it doesn't exist
 	var networkExists bool
@@ -80,38 +128,59 @@ func main() {
 		})
 		if err != nil {
 			fmt.Println(err)
-			os.Exit(1)
+			return
 		}
 	}
-	psqlID, err := SpawnPostgresql(&conn, wd, pull, showLogs)
+	psqlID, err := SpawnPostgresql(&conn, wd, *pull, *showLogs)
 	if err != nil {
 		fmt.Println(err)
-		os.Exit(1)
+		return
 	}
 	defer stopContainers(&conn, psqlID)
 
-	neo4jID, err := SpawnNeo4j(&conn, wd, pull, showLogs)
+	neo4jID, err := SpawnNeo4j(&conn, wd, *pull, *showLogs)
 	if err != nil {
 		fmt.Println(err)
-		os.Exit(1)
+		return
 	}
 	defer stopContainers(&conn, neo4jID)
 
-	fmt.Printf("Sleeping 15 seconds because PostgreSQL is slow...\n")
-	time.Sleep(15 * time.Second)
+	// fmt.Printf("Sleeping 15 seconds because PostgreSQL is slow...\n")
+	// time.Sleep(15 * time.Second)
 
-	bloodhoundID, err := SpawnBloodhoundCE(&conn, wd, pull, showLogs)
+	bloodhoundID, err := SpawnBloodhoundCE(&conn, wd, *pull, *showLogs)
 	if err != nil {
 		fmt.Println(err)
-		os.Exit(1)
+		return
 	}
 	defer stopContainers(&conn, bloodhoundID)
+	fmt.Printf("Updating password expiration...\n")
+	err = updatePasswordExpiration(&conn, psqlID, *expiration)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Printf("Injecting custom queries...\n")
+	queries, err := readLegacyQueries("customqueries.json")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	newQueries := legacyToNewQueries(queries)
+	err = injectCustomQueries(&conn, psqlID, newQueries)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
 
 	// <-bhReady
 
 	// update postgresql password expiration
 	// TODO
-	fmt.Print("Press any key to exit.")
+	fmt.Printf("Access bloodhound at http://127.0.0.1:8181\n")
+	fmt.Printf("Username: %s\n", ADMIN_NAME)
+	fmt.Printf("Password: %s\n", ADMIN_PASS)
+	fmt.Print("Press any key to stop containers and exit...")
 	input := bufio.NewScanner(os.Stdin)
 	input.Scan()
 	fmt.Printf("Cleaning up...\n")
@@ -200,6 +269,17 @@ func SpawnNeo4j(conn *context.Context, wd string, pull bool, showLogs bool) (str
 	remove := true
 	s.Remove = &remove
 
+	s.PortMappings = []types.PortMapping{ // Expose ports for max and nxc
+		{
+			HostPort:      7474,
+			ContainerPort: 7474,
+		},
+		{
+			HostPort:      7687,
+			ContainerPort: 7687,
+		},
+	}
+
 	createResponse, err := containers.CreateWithSpec(*conn, s, nil)
 	if err != nil {
 		return "", err
@@ -278,7 +358,9 @@ func waitUntilReady(conn *context.Context, id string, success string, product st
 	logs := make(chan string)
 	ready := make(chan bool, 1)
 	// loop reading logs until we are successful, if an error we restart the container
-	fmt.Printf("Watching logs until %s is ready...\n", product)
+	if showlogs {
+		fmt.Printf("Watching logs until %s is ready...\n", product)
+	}
 	go func() {
 		for msg := range logs {
 			if showlogs {
@@ -303,15 +385,18 @@ func waitUntilReady(conn *context.Context, id string, success string, product st
 			fmt.Println(err)
 			return err
 		}
-
-		fmt.Printf("Done checking logs for now...\n")
+		if showlogs {
+			fmt.Printf("Done checking logs for now...\n")
+		}
 		select {
 		case <-ready:
 			return nil
 		default:
 		}
 		time.Sleep(5 * time.Second)
-		fmt.Printf("Checking logs again...\n")
+		if showlogs {
+			fmt.Printf("Checking logs again...\n")
+		}
 	}
 }
 
@@ -329,4 +414,179 @@ func stopContainers(conn *context.Context, running ...string) error {
 
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+func updatePasswordExpiration(conn *context.Context, containerID string, expiration string) error {
+	// podman exec "$POSTGRES_CONTAINER" psql -q -U "bloodhound" -d "bloodhound" -c \
+	// "UPDATE auth_secrets SET expires_at='$EXPIRY' WHERE id='1';"
+	config := &handlers.ExecCreateConfig{}
+	// command := `psql -q -U bloodhound -d bloodhound -c "UPDATE auth_secrets SET expires_at='$EXPIRY' WHERE id='1';"`
+	// command := `ls`
+	final := fmt.Sprintf("UPDATE auth_secrets SET expires_at='%s' WHERE id='1';", expiration)
+	config.Cmd = []string{"psql", "-q", "-U", "bloodhound", "-d", "bloodhound", "-c", final}
+	// config.Cmd = append(config.Cmd, command)
+	// config.Detach = true
+	// config.User = "root"
+
+	execID, err := containers.ExecCreate(*conn, containerID, config)
+	if err != nil {
+		return err
+	}
+
+	// inspect to debug
+	// inspection, err := containers.ExecInspect(*conn, execID, nil)
+	// if err != nil {
+	// 	return err
+	// }
+	// fmt.Printf("ExecInspect: %#+v\n", inspection)
+
+	// startOptions := &containers.ExecStartOptions{}
+
+	err = containers.ExecStart(*conn, execID, nil)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func insertCustomQuery(conn *context.Context, containerID string, name string, query string, description string) error {
+	// INSERT INTO saved_queries (user_id, name, query, description) SELECT (SELECT id FROM users WHERE principal_name = 'admin'), 'My New Query Name', 'SELECT * FROM some_table;', 'A description of my query' WHERE EXISTS (SELECT 1 FROM users WHERE principal_name = 'admin');
+	config := &handlers.ExecCreateConfig{}
+
+	// name := "My New Query Name"
+	// query := "MATCH p=(n:Group)<-[:MemberOf*1..]-(m:Base) WHERE n.objectid ENDS WITH '-512' RETURN p LIMIT 1000"
+	// description := "A description of my query"
+
+	final := fmt.Sprintf("INSERT INTO saved_queries (user_id, name, query, description) SELECT (SELECT id FROM users WHERE principal_name = 'admin'), '%s', '%s', '%s' WHERE EXISTS (SELECT 1 FROM users WHERE principal_name = '%s');", name, query, description, ADMIN_NAME)
+
+	config.Cmd = []string{"psql", "-q", "-U", "bloodhound", "-d", "bloodhound", "-c", final}
+
+	execID, err := containers.ExecCreate(*conn, containerID, config)
+	if err != nil {
+		return err
+	}
+
+	err = containers.ExecStart(*conn, execID, nil)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+type BloodHoundLegacyQuery struct {
+	Name     string                `json:"name"`
+	Category string                `json:"category"`
+	Queries  []BloodHoundQueryItem `json:"queryList"`
+}
+
+type BloodHoundQueryItem struct {
+	Final             bool              `json:"final"`
+	Title             string            `json:"title,omitempty"` // Title is optional
+	Query             string            `json:"query"`
+	AllowCollapse     bool              `json:"allowCollapse,omitempty"`     // allowCollapse is optional
+	Props             map[string]string `json:"props,omitempty"`             // props is optional
+	RequireNodeSelect bool              `json:"requireNodeSelect,omitempty"` // requireNodeSelect is optional
+	StartNode         string            `json:"startNode,omitempty"`         // startNode is optional
+	EndNode           string            `json:"endNode,omitempty"`           // endNode is optional
+}
+
+type BloodHoundLegacyQueries struct {
+	Queries []BloodHoundLegacyQuery `json:"queries"`
+}
+
+func readLegacyQueries(path string) (BloodHoundLegacyQueries, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return BloodHoundLegacyQueries{}, err
+	}
+	var LegacyQueries BloodHoundLegacyQueries
+
+	// 3. Unmarshal the JSON data into the struct
+	err = json.Unmarshal(data, &LegacyQueries)
+	if err != nil {
+		return BloodHoundLegacyQueries{}, err
+	}
+	return LegacyQueries, nil
+}
+
+type BloodHoundQuery struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Query       string `json:"query"`
+}
+
+type BloodHoundQueries struct {
+	Queries []BloodHoundQuery `json:"queries"`
+}
+
+func legacyToNewQueries(legacy BloodHoundLegacyQueries) BloodHoundQueries {
+	var newQueries BloodHoundQueries
+	for _, q := range legacy.Queries {
+		query := LegacyQueryToSingleModernQuery(q)
+		if query.Description != "Unimplemented" {
+			newQueries.Queries = append(newQueries.Queries, query)
+		}
+	}
+	return newQueries
+}
+
+func LegacyQueryToSingleModernQuery(legacy BloodHoundLegacyQuery) BloodHoundQuery {
+	// if len(legacy.Queries) == 1 then return BloodHoundQuery
+	if len(legacy.Queries) == 1 { // if there's a single query then return it
+		name := fmt.Sprintf("[%s] %s", legacy.Category, legacy.Name)
+		query := ""
+		if legacy.Queries[0].Props != nil {
+			query = inlinePropValue(legacy.Queries[0].Query, legacy.Queries[0].Props)
+		} else {
+			query = legacy.Queries[0].Query
+		}
+		return BloodHoundQuery{
+			Name:        name,
+			Description: legacy.Name,
+			Query:       query,
+		}
+	}
+	name := fmt.Sprintf("Multi Query not implemented yet: %s\n", legacy.Name)
+	return BloodHoundQuery{
+		Name:        name,
+		Description: "Unimplemented",
+		Query:       "//Unimplemented",
+	}
+	// // otherwise we need to combine the queries
+	// name := fmt.Sprintf("[%s] %s", legacy.Category, legacy.Name)
+	// desc := legacy.Name
+	// query := ""
+	// for _, q := range legacy.Queries {
+	// 	query += q.Query + "\n"
+	// }
+	// return BloodHoundQuery{
+	// 	Name:        name,
+	// 	Description: desc,
+	// 	Query:       query,
+	// }
+}
+
+func inlinePropValue(query string, props map[string]string) string {
+	// replace props in query
+	for k, v := range props {
+		// k is the variable name which is prepended by $ in the query
+		// v is the value to replace it with
+		variable := fmt.Sprintf("$%s", k)
+		quoted := fmt.Sprintf("'%s'", v)
+		query = strings.ReplaceAll(query, variable, quoted)
+	}
+	return query
+}
+
+func injectCustomQueries(conn *context.Context, containerID string, queries BloodHoundQueries) error {
+	for i, q := range queries.Queries {
+		fmt.Printf("Injecting query [%d/%d]: %s\n", i+1, len(queries.Queries), q.Name)
+		err := insertCustomQuery(conn, containerID, q.Name, q.Query, q.Description)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
