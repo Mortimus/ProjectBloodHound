@@ -1,10 +1,14 @@
 # ProjectBloodHound
-a tool for spinning up BloodHound CE containers and configuring common tools for project based activities. inspired by https://github.com/SySS-Research/Single-User-BloodHound
+a tool for spinning up BloodHound CE containers for a single project/user. Sets the credentials to admin:admin, and imports customqueries.json. Stores data in a local folder for persistence. Inspired by https://github.com/SySS-Research/Single-User-BloodHound
 
 ## Requirements
 * `podman`
 * `libbtrfs-dev`
 * `libgpgme-dev`
+
+## Installation
+After installing the above dependencies
+`go install github.com/Mortimus/ProjectBloodHound@latest`
 
 ## Arguments
 
