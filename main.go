@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,6 +20,8 @@ import (
 	"github.com/containers/podman/v5/pkg/bindings/images"
 	"github.com/containers/podman/v5/pkg/bindings/network"
 	"github.com/containers/podman/v5/pkg/specgen"
+
+	spec "github.com/opencontainers/runtime-spec/specs-go"
 )
 
 const (
@@ -39,12 +42,15 @@ const (
 var ADMIN_NAME string = "admin"
 var ADMIN_PASS string = "admin"
 
-func createFolders() error {
-	err := os.MkdirAll(PSQLFOLDER, 0755)
+func createFolders(base string) error {
+	fmt.Printf("Ensuring data folders at %s\n", base)
+	psqlPath := path.Join(base, PSQLFOLDER)
+	err := os.MkdirAll(psqlPath, 0755)
 	if err != nil {
 		return err
 	}
-	err = os.MkdirAll(NEO4JFOLDER, 0755)
+	neo4jPath := path.Join(base, NEO4JFOLDER)
+	err = os.MkdirAll(neo4jPath, 0755)
 	if err != nil {
 		return err
 	}
@@ -86,14 +92,6 @@ func loadConfig() error {
 }
 
 func main() {
-	// pull cli flags
-	pull := flag.Bool("pull", false, "Pull images before starting containers")
-	showLogs := flag.Bool("logs", false, "Show container logs")
-	expiration := flag.String("expiration", time.Now().AddDate(10, 0, 0).Format("2006-01-02 15:04:05"), "Set password expiration date")
-	flag.Parse()
-	// showLogs := true
-	createFolders()
-
 	// make source full path
 	// get the current working directory
 	wd, err := os.Getwd()
@@ -101,6 +99,36 @@ func main() {
 		fmt.Println(err)
 		return
 	}
+	// currentFolderName := filepath.Base(wd)
+	// pull cli flags
+	pull := flag.Bool("pull", false, "Pull images before starting containers")
+	showLogs := flag.Bool("logs", false, "Show container logs")
+	expiration := flag.String("expiration", time.Now().AddDate(10, 0, 0).Format("2006-01-02 15:04:05"), "Set password expiration date")
+	customPath := flag.String("custom", "customqueries.json", "Path to custom queries json file in legacy bloodhound format")
+	path := flag.String("path", wd, "Path to store data folders")
+	forceInjection := flag.Bool("force", false, "Force injection of custom queries - will add duplicates if they alerady exist")
+	// name := flag.String("name", currentFolderName, "Project Name for internal database usage")
+	flag.Parse()
+	// check to see if the path exists
+	checkPath := filepath.Join(*path, PSQLFOLDER)
+	if _, err := os.Stat(checkPath); os.IsNotExist(err) {
+		fmt.Printf("New project detected, creating folders at %s\n", *path)
+		forceInjection = boolPtr(true)
+		err = nil
+	}
+	// check if the custom queries file exists
+	if _, err := os.Stat(*customPath); os.IsNotExist(err) {
+		fmt.Printf("Custom queries file not found at %s\n", *customPath)
+		return
+	}
+	// showLogs := true
+	err = createFolders(*path)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Printf("Folders created at %s\n", *path)
+
 	conn, err := bindings.NewConnection(context.Background(), "unix:///run/podman/podman.sock")
 	if err != nil {
 		fmt.Println(err)
@@ -131,14 +159,14 @@ func main() {
 			return
 		}
 	}
-	psqlID, err := SpawnPostgresql(&conn, wd, *pull, *showLogs)
+	psqlID, err := SpawnPostgresql(&conn, *path, *pull, *showLogs)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 	defer stopContainers(&conn, psqlID)
 
-	neo4jID, err := SpawnNeo4j(&conn, wd, *pull, *showLogs)
+	neo4jID, err := SpawnNeo4j(&conn, *path, *pull, *showLogs)
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -160,23 +188,21 @@ func main() {
 		fmt.Println(err)
 		return
 	}
-	fmt.Printf("Injecting custom queries...\n")
-	queries, err := readLegacyQueries("customqueries.json")
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	newQueries := legacyToNewQueries(queries)
-	err = injectCustomQueries(&conn, psqlID, newQueries)
-	if err != nil {
-		fmt.Println(err)
-		return
+	if *forceInjection {
+		fmt.Printf("Injecting custom queries...\n")
+		queries, err := readLegacyQueries(*customPath)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		newQueries := legacyToNewQueries(queries)
+		err = injectCustomQueries(&conn, psqlID, newQueries)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
 	}
 
-	// <-bhReady
-
-	// update postgresql password expiration
-	// TODO
 	fmt.Printf("Access bloodhound at http://127.0.0.1:8181\n")
 	fmt.Printf("Username: %s\n", ADMIN_NAME)
 	fmt.Printf("Password: %s\n", ADMIN_PASS)
@@ -211,12 +237,20 @@ func SpawnPostgresql(conn *context.Context, wd string, pull bool, showLogs bool)
 		},
 	}
 
-	s.OverlayVolumes = []*specgen.OverlayVolume{
+	s.Mounts = []spec.Mount{
 		{
-			Source:      path.Join(wd, PSQLFOLDER),  // local folder
-			Destination: "/var/lib/postgresql/data", // container folder
+			Type:        "bind",
+			Source:      path.Join(wd, PSQLFOLDER),
+			Destination: "/var/lib/postgresql/data",
 		},
 	}
+
+	// s.OverlayVolumes = []*specgen.OverlayVolume{
+	// 	{
+	// 		Source:      path.Join(wd, PSQLFOLDER),  // local folder
+	// 		Destination: "/var/lib/postgresql/data", // container folder
+	// 	},
+	// }
 	remove := true
 	s.Remove = &remove
 
@@ -260,12 +294,20 @@ func SpawnNeo4j(conn *context.Context, wd string, pull bool, showLogs bool) (str
 		},
 	}
 
-	s.OverlayVolumes = []*specgen.OverlayVolume{
+	s.Mounts = []spec.Mount{
 		{
-			Source:      path.Join(wd, NEO4JFOLDER), // local folder
-			Destination: "/data",                    // container folder
+			Type:        "bind",
+			Source:      path.Join(wd, NEO4JFOLDER),
+			Destination: "/data",
 		},
 	}
+
+	// s.OverlayVolumes = []*specgen.OverlayVolume{
+	// 	{
+	// 		Source:      path.Join(wd, NEO4JFOLDER), // local folder
+	// 		Destination: "/data",                    // container folder
+	// 	},
+	// }
 	remove := true
 	s.Remove = &remove
 
