@@ -1,10 +1,10 @@
 # ProjectBloodHound
-a tool for spinning up BloodHound CE containers and configuring common tools for project based activities.
+a tool for spinning up BloodHound CE containers and configuring common tools for project based activities. inspired by https://github.com/SySS-Research/Single-User-BloodHound
 
 ## Requirements
-`podman`
-`libbtrfs-dev`
-`libgpgme-dev`
+* `podman`
+* `libbtrfs-dev`
+* `libgpgme-dev`
 
 ## Arguments
 
