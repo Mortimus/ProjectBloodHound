@@ -5,7 +5,8 @@ a tool for spinning up BloodHound CE containers for a single project/user. Sets 
 * `podman`
 * `libbtrfs-dev`
 * `libgpgme-dev`
-If you are on kali this means
+
+### If you are on kali this means
 `sudo apt install podman libbtrfs-dev libgpgme-dev`
 `sudo systemctl enable podman --now`
 
